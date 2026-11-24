@@ -1,0 +1,6 @@
+{
+  "name": "Lendrixventech Franchise Distribution Platform",
+  "description": "Integrated role-based franchise distribution partnership platform for mutual funds, loans, insurance, real estate, and venture capital services.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
