@@ -10,6 +10,7 @@ import {
   addAuditLog,
   buildRoleScopedPayload,
   isProductAllowedForFranchisee,
+  securityConfig,
   store,
 } from './server/store.ts';
 import {
@@ -40,11 +41,23 @@ interface MfaChallenge {
   challengeId: string;
   userId: string;
   code: string;
+  attempts: number;
   expiresAt: number;
 }
 
 const sessions = new Map<string, ActiveSession>();
 const mfaChallenges = new Map<string, MfaChallenge>();
+const MAX_MFA_ATTEMPTS = 5;
+
+function pruneExpiredAuthEntries() {
+  const now = Date.now();
+  for (const [id, ch] of mfaChallenges.entries()) {
+    if (now > ch.expiresAt) mfaChallenges.delete(id);
+  }
+  for (const [tok, sess] of sessions.entries()) {
+    if (now > sess.expiresAt) sessions.delete(tok);
+  }
+}
 
 interface AuthedRequest extends Request {
   authUser?: UserAccount;
@@ -83,8 +96,10 @@ function requireAuth(req: AuthedRequest, res: Response, next: NextFunction): voi
     res.status(401).json({ error: 'User account not found.' });
     return;
   }
+  const runtimeTimeoutMinutes =
+    securityConfig.configurableTimeoutMinutes ?? user.configuredSessionTimeoutMinutes ?? 60;
   session.lastActivityAt = now;
-  session.expiresAt = now + user.sessionTimeoutMinutes * 60 * 1000;
+  session.expiresAt = now + runtimeTimeoutMinutes * 60 * 1000;
   req.authUser = user;
   req.authSession = session;
   next();
@@ -117,13 +132,15 @@ async function startServer() {
         roleLabel: u.roleLabel,
         franchiseeId: u.franchiseeId,
         franchiseeName: u.franchiseeName,
-        sessionTimeoutMinutes: u.sessionTimeoutMinutes,
+        sessionTimeoutPolicy: u.sessionTimeoutPolicy,
+        configuredSessionTimeoutMinutes: u.configuredSessionTimeoutMinutes,
       })),
     });
   });
 
-  // Step 1: Initiate login -> issues server-side MFA challenge
+  // Step 1: Initiate login -> issues built-in MFA challenge (no external MFA provider connected)
   app.post('/api/auth/login', (req, res) => {
+    pruneExpiredAuthEntries();
     const accountId = typeof req.body?.accountId === 'string' ? req.body.accountId : '';
     const user = getAccountById(accountId);
     if (!user) {
@@ -136,9 +153,10 @@ async function startServer() {
       challengeId,
       userId: user.id,
       code,
+      attempts: 0,
       expiresAt: Date.now() + 5 * 60 * 1000,
     });
-    addAuditLog(user, 'MFA_CHALLENGE_ISSUED', user.id, `MFA verification initiated for ${user.role}.`);
+    addAuditLog(user, 'MFA_CHALLENGE_ISSUED', user.id, `Built-in MFA verification initiated for ${user.role} (external MFA provider not connected).`);
     res.json({
       challengeId,
       account: {
@@ -147,18 +165,19 @@ async function startServer() {
         role: user.role,
         roleLabel: user.roleLabel,
       },
-      // Delivered to the in-app authenticator prompt for interactive verification
-      authenticatorVerificationCode: code,
+      builtInChallengeCode: code,
+      mfaIntegrationStatus: 'Not Connected',
     });
   });
 
-  // Step 2: Verify MFA -> issue in-memory Bearer token
+  // Step 2: Verify MFA -> issue in-memory Bearer token (one-time use, 5-attempt lockout, timing-safe comparison)
   app.post('/api/auth/verify-mfa', (req, res) => {
+    pruneExpiredAuthEntries();
     const challengeId = typeof req.body?.challengeId === 'string' ? req.body.challengeId : '';
     const code = typeof req.body?.code === 'string' ? req.body.code.trim() : '';
     const challenge = mfaChallenges.get(challengeId);
     if (!challenge) {
-      res.status(400).json({ error: 'MFA challenge not found. Please start sign-in again.' });
+      res.status(400).json({ error: 'MFA challenge not found or already consumed. Please start sign-in again.' });
       return;
     }
     if (Date.now() > challenge.expiresAt) {
@@ -166,7 +185,26 @@ async function startServer() {
       res.status(401).json({ error: 'MFA verification code expired.' });
       return;
     }
-    if (challenge.code !== code) {
+    const expectedBuf = Buffer.from(challenge.code, 'utf8');
+    const providedBuf = Buffer.from(code, 'utf8');
+    const codeMatches =
+      expectedBuf.length === providedBuf.length &&
+      crypto.timingSafeEqual(expectedBuf, providedBuf);
+
+    if (!codeMatches) {
+      challenge.attempts += 1;
+      const targetUser = getAccountById(challenge.userId);
+      if (challenge.attempts >= MAX_MFA_ATTEMPTS) {
+        mfaChallenges.delete(challengeId);
+        if (targetUser) {
+          addAuditLog(targetUser, 'MFA_CHALLENGE_LOCKED', targetUser.id, 'MFA challenge invalidated after maximum failed attempts.');
+        }
+        res.status(401).json({ error: 'Maximum MFA verification attempts exceeded. Challenge invalidated; start sign-in again.' });
+        return;
+      }
+      if (targetUser) {
+        addAuditLog(targetUser, 'MFA_VERIFY_FAILED', targetUser.id, `Failed MFA attempt ${challenge.attempts}/${MAX_MFA_ATTEMPTS}.`);
+      }
       res.status(401).json({ error: 'Invalid MFA verification code.' });
       return;
     }
@@ -178,9 +216,11 @@ async function startServer() {
     }
     const token = crypto.randomBytes(32).toString('hex');
     const now = Date.now();
-    const expiresAt = now + user.sessionTimeoutMinutes * 60 * 1000;
+    const runtimeTimeoutMinutes =
+      securityConfig.configurableTimeoutMinutes ?? user.configuredSessionTimeoutMinutes ?? 60;
+    const expiresAt = now + runtimeTimeoutMinutes * 60 * 1000;
     sessions.set(token, { token, userId: user.id, lastActivityAt: now, expiresAt });
-    addAuditLog(user, 'MFA_LOGIN_SUCCESS', user.id, `Signed in to ${user.role} dashboard.`);
+    addAuditLog(user, 'MFA_LOGIN_SUCCESS', user.id, `Signed in to ${user.role} dashboard via built-in MFA challenge.`);
     res.json({ token, user, sessionExpiresAt: expiresAt });
   });
 
@@ -314,7 +354,7 @@ async function startServer() {
       if (nextStep >= 2 && fr.kycKybStatus === 'Pending') fr.kycKybStatus = 'Submitted';
       if (nextStep >= 4) fr.certificationStatus = 'Certified';
       if (nextStep >= 6 && fr.relationshipManager === 'Pending Assignment') {
-        fr.relationshipManager = 'Kavita Iyer (RM-West-02)';
+        fr.relationshipManager = 'Assigned Relationship Manager';
       }
       if (nextStep >= 6 && fr.kycKybStatus === 'Verified' && fr.agreementStatus === 'Digitally Signed') {
         fr.platformActivationStatus = 'Activated';
@@ -517,7 +557,7 @@ async function startServer() {
       productInterest,
       status: 'New',
       assignedStaffId: assignToStaff ? 'usr-staff-101' : undefined,
-      assignedStaffName: assignToStaff ? 'Riya Kapoor' : undefined,
+      assignedStaffName: assignToStaff ? 'Franchisee Staff Account (FRN-101)' : undefined,
       createdAt: new Date().toISOString().slice(0, 10),
     });
     addAuditLog(user, 'LEAD_CAPTURED', id, `Captured ${source} lead for ${fr.franchiseeCode} (${productInterest}).`);
@@ -531,20 +571,22 @@ async function startServer() {
       return;
     }
     const user = req.authUser!;
-    if ((user.role === 'FRANCHISEE' || user.role === 'FRANCHISEE_STAFF') && lead.franchiseeId !== user.franchiseeId) {
-      res.status(403).json({ error: 'Customer & lead isolation: cannot modify another Franchisee’s lead.' });
+    if (user.role === 'FRANCHISEE_STAFF') {
+      res.status(403).json({
+        error: 'FR-06 role-based staff permission model is Pending Confirmation. Assigned lead access is not automatically approved.',
+      });
       return;
     }
-    if (user.role === 'FRANCHISEE_STAFF' && lead.assignedStaffId !== user.id) {
-      res.status(403).json({ error: 'Staff access restricted to assigned leads only.' });
+    if (user.role === 'FRANCHISEE' && lead.franchiseeId !== user.franchiseeId) {
+      res.status(403).json({ error: 'Customer & lead isolation: cannot modify another Franchisee’s lead.' });
       return;
     }
     if (['New', 'Contacted', 'KYC Pending', 'Converted', 'Closed'].includes(req.body?.status)) {
       lead.status = req.body.status;
     }
-    if (req.body?.assignedStaffId === 'usr-staff-101' && lead.franchiseeId === 'frn-101' && user.role !== 'FRANCHISEE_STAFF') {
+    if (req.body?.assignedStaffId === 'usr-staff-101' && lead.franchiseeId === 'frn-101') {
       lead.assignedStaffId = 'usr-staff-101';
-      lead.assignedStaffName = 'Riya Kapoor';
+      lead.assignedStaffName = 'Franchisee Staff Account (FRN-101)';
     }
     addAuditLog(user, 'LEAD_UPDATED', lead.id, `Updated lead ${lead.customerName} status to ${lead.status}.`);
     res.json({ ok: true, lead });
@@ -598,12 +640,14 @@ async function startServer() {
       return;
     }
     const user = req.authUser!;
-    if (cust.franchiseeId !== user.franchiseeId) {
-      res.status(403).json({ error: 'Customer isolation violation: record belongs to another Franchisee.' });
+    if (user.role === 'FRANCHISEE_STAFF') {
+      res.status(403).json({
+        error: 'FR-06 role-based staff permission model is Pending Confirmation. Customer follow-up access is not automatically approved.',
+      });
       return;
     }
-    if (user.role === 'FRANCHISEE_STAFF' && cust.assignedStaffId !== user.id) {
-      res.status(403).json({ error: 'Staff access restricted to assigned customer follow-ups only.' });
+    if (cust.franchiseeId !== user.franchiseeId) {
+      res.status(403).json({ error: 'Customer isolation violation: record belongs to another Franchisee.' });
       return;
     }
     const today = new Date().toISOString().slice(0, 10);
@@ -681,7 +725,18 @@ async function startServer() {
       amount,
       workflowSummary: workflowSummary || `${productCategory} order submitted to manufacturer`,
       manufacturerStatus: 'Submitted',
-      eligibilityStatus: 'Pending',
+      eligibilityStatus: 'Awaiting Verification',
+      integrationSourceStatus: 'Awaiting Verification (Integration Not Connected)',
+      eligibleStatusRule:
+        productCategory === 'Mutual Funds'
+          ? 'Fund transaction allotment & issuance confirmed'
+          : productCategory === 'Loans'
+            ? 'Loan disbursal confirmed by partner lender'
+            : productCategory === 'Insurance'
+              ? 'Policy issuance confirmed by partner insurer'
+              : productCategory === 'Real Estate'
+                ? 'Booking / registration milestone confirmed per developer terms'
+                : 'Subscription acceptance & eligibility confirmed by fund vehicle',
       commissionAccrued: 0,
       postSaleServicing: {
         type:
@@ -694,7 +749,7 @@ async function startServer() {
                 : productCategory === 'Real Estate'
                   ? 'Registration Follow-up'
                   : 'Distribution Notice',
-        status: 'Awaiting manufacturer confirmation',
+        status: 'Awaiting manufacturer confirmation (integration not connected)',
         nextDate: '2026-12-20',
       },
       vcChecklist:
@@ -716,7 +771,7 @@ async function startServer() {
     res.json({ ok: true, id });
   });
 
-  // Update manufacturer status / mark eligible (Lendrixventech Ops or Company)
+  // Update manufacturer status / eligibility (Strictly blocks verification when FR-52 integrations are Not Connected)
   app.patch('/api/transactions/:id', requireAuth, requireRoles(['LENDRIXVENTECH', 'COMPANY', 'FRANCHISEE']), (req: AuthedRequest, res) => {
     const txn = store.transactions.find((t) => t.id === req.params.id);
     if (!txn) {
@@ -729,32 +784,99 @@ async function startServer() {
         res.status(403).json({ error: 'Cannot access another Franchisee’s transaction.' });
         return;
       }
-      // Franchisee can log post-sale servicing update only
       if (typeof req.body?.servicingStatus === 'string' && req.body.servicingStatus.trim()) {
         txn.postSaleServicing.status = req.body.servicingStatus.trim();
         addAuditLog(user, 'POST_SALE_SERVICING_UPDATED', txn.id, `Updated servicing note: ${txn.postSaleServicing.status}`);
         res.json({ ok: true, transaction: txn });
         return;
       }
-      res.status(403).json({ error: 'Manufacturer status & eligibility updates are processed via platform/manufacturer sync.' });
+      res.status(403).json({ error: 'Manufacturer status & eligibility updates require connected FR-52 manufacturer verification.' });
       return;
     }
 
-    if (req.body?.manufacturerStatus) {
-      txn.manufacturerStatus = req.body.manufacturerStatus;
-    }
-    if (req.body?.eligibilityStatus) {
-      txn.eligibilityStatus = req.body.eligibilityStatus;
-      if (txn.eligibilityStatus === 'Eligible' && txn.commissionAccrued === 0) {
-        // Record gross accrued figure without inventing split %
-        txn.commissionAccrued = Math.round(txn.amount * 0.01);
+    const requiredStatusMap: Record<ProductCategory, 'Allotted / Executed' | 'Disbursed' | 'Policy Issued' | 'Booked' | 'Subscription Accepted'> = {
+      'Mutual Funds': 'Allotted / Executed',
+      'Loans': 'Disbursed',
+      'Insurance': 'Policy Issued',
+      'Real Estate': 'Booked',
+      'Venture Capital Services': 'Subscription Accepted',
+    };
+    const requiredStatus = requiredStatusMap[txn.productCategory];
+
+    if (req.body?.eligibilityStatus === 'Eligible') {
+      const targetMfgStatus = req.body?.manufacturerStatus || txn.manufacturerStatus;
+      if (targetMfgStatus !== requiredStatus) {
+        res.status(400).json({
+          error: `Product-specific eligibility rule requires "${requiredStatus}" for ${txn.productCategory}. Generic cross-product statuses are not accepted.`,
+        });
+        return;
+      }
+
+      if (
+        txn.productCategory === 'Venture Capital Services' &&
+        (!txn.vcChecklist?.investorEligibilityPassed || !txn.vcChecklist?.suitabilityPassed)
+      ) {
+        res.status(400).json({
+          error: 'Venture Capital Services requires verified investor eligibility and suitability checks (FR-15).',
+        });
+        return;
+      }
+
+      const relevantIntegration = store.integrations.find((i) =>
+        txn.productCategory === 'Mutual Funds'
+          ? i.id === 'int-1'
+          : txn.productCategory === 'Loans'
+            ? i.id === 'int-2'
+            : txn.productCategory === 'Insurance'
+              ? i.id === 'int-3'
+              : false
+      );
+      const isConnected = relevantIntegration ? relevantIntegration.status !== 'Not Connected' : false;
+
+      if (!isConnected) {
+        const attemptedRef =
+          typeof req.body?.verifiedSourceReference === 'string' ? req.body.verifiedSourceReference.trim() : '';
+        if (attemptedRef) {
+          txn.verifiedSourceReference = `Unverified Ref Note: ${attemptedRef}`;
+        }
+        txn.eligibilityStatus = 'Awaiting Verification';
+        txn.integrationSourceStatus = 'Awaiting Verification (Integration Not Connected)';
+        txn.commissionAccrued = 0;
+        addAuditLog(
+          user,
+          'ELIGIBILITY_BLOCKED_INTEGRATION_NOT_CONNECTED',
+          txn.id,
+          `Blocked Eligible marking on ${txn.id}: FR-52 integration is Not Connected. Manual references cannot verify eligibility without genuine manufacturer integration validation.`
+        );
+        res.status(403).json({
+          error:
+            'Cannot mark transaction Eligible: FR-52 manufacturer integration is Not Connected. A manually entered source reference cannot be treated as verified without genuine manufacturer validation; status remains Awaiting Verification.',
+        });
+        return;
       }
     }
-    addAuditLog(user, 'TRANSACTION_STATUS_UPDATED', txn.id, `Set manufacturer=${txn.manufacturerStatus}, eligibility=${txn.eligibilityStatus}.`);
+
+    if (req.body?.manufacturerStatus) {
+      const allowedStatuses = ['Submitted', 'Under Review', 'Rejected', requiredStatus];
+      if (!allowedStatuses.includes(req.body.manufacturerStatus)) {
+        res.status(400).json({
+          error: `Status "${req.body.manufacturerStatus}" is not valid for ${txn.productCategory}. Applicable terminal rule: "${requiredStatus}".`,
+        });
+        return;
+      }
+      txn.manufacturerStatus = req.body.manufacturerStatus;
+      txn.eligibilityStatus = 'Awaiting Verification';
+      txn.integrationSourceStatus = 'Awaiting Verification (Integration Not Connected)';
+      txn.commissionAccrued = 0;
+    }
+    if (typeof req.body?.verifiedSourceReference === 'string' && req.body.verifiedSourceReference.trim()) {
+      txn.verifiedSourceReference = `Unverified Ref Note: ${req.body.verifiedSourceReference.trim()}`;
+    }
+    addAuditLog(user, 'TRANSACTION_STATUS_UPDATED', txn.id, `Updated manufacturer status=${txn.manufacturerStatus}; eligibility=${txn.eligibilityStatus}.`);
     res.json({ ok: true, transaction: txn });
   });
 
-  // Commission Statement Reconciliation & Finance Maker-Checker Flow (FR-31..FR-34)
+  // Commission Statement Reconciliation & Maker-Checker Flow (FR-31..FR-34, configurable actors)
   app.post('/api/commissions/statements/:id/action', requireAuth, requireRoles(['LENDRIXVENTECH', 'COMPANY']), (req: AuthedRequest, res) => {
     const stmt = store.commissionStatements.find((s) => s.id === req.params.id);
     if (!stmt) {
@@ -780,28 +902,38 @@ async function startServer() {
       stmt.finalPayableAmount = Math.max(0, stmt.franchiseeShareAmount - stmt.tdsDeduction - stmt.clawbacks + stmt.adjustments);
       addAuditLog(user, 'COMMISSION_CLAWBACK_ADJUSTMENT', stmt.id, `Recorded clawback=${cb}, adjustment=${adj}.`);
     } else if (action === 'maker_submit') {
+      if (!user.makerCheckerRole?.canActAsMaker) {
+        res.status(403).json({ error: 'User is not currently configured with Maker assignment.' });
+        return;
+      }
       if (stmt.reconciliationStatus !== 'Matched') {
         res.status(400).json({ error: 'Statement must be reconciled (Matched) before Maker submission.' });
         return;
       }
       stmt.makerCheckerStage = 'Maker Submitted';
-      stmt.makerActor = `${user.name} (${user.roleLabel})`;
-      addAuditLog(user, 'FINANCE_MAKER_SUBMITTED', stmt.id, `Submitted ${stmt.invoiceNumber} to Finance Checker.`);
+      stmt.makerActorId = user.id;
+      stmt.makerActor = user.name;
+      addAuditLog(user, 'MAKER_SUBMITTED', stmt.id, `Maker (${user.name}) submitted ${stmt.invoiceNumber} for Checker approval.`);
     } else if (action === 'checker_approve') {
+      if (!user.makerCheckerRole?.canActAsChecker) {
+        res.status(403).json({ error: 'User is not currently configured with Checker assignment.' });
+        return;
+      }
       if (stmt.makerCheckerStage !== 'Maker Submitted') {
         res.status(400).json({ error: 'Statement must be Maker Submitted before Checker approval.' });
         return;
       }
-      if (stmt.makerActor && stmt.makerActor.startsWith(user.name)) {
-        res.status(403).json({ error: 'Maker-Checker control (FR-51): Checker cannot be the same individual who submitted as Maker.' });
+      if (stmt.makerActorId === user.id || (stmt.makerActor && stmt.makerActor === user.name)) {
+        res.status(403).json({ error: 'Maker-Checker control (FR-51): Checker must be a distinct user from the Maker.' });
         return;
       }
       stmt.makerCheckerStage = 'Checker Approved';
-      stmt.checkerActor = `${user.name} (${user.roleLabel})`;
-      addAuditLog(user, 'FINANCE_CHECKER_APPROVED', stmt.id, `Finance Checker approved ${stmt.invoiceNumber}.`);
+      stmt.checkerActorId = user.id;
+      stmt.checkerActor = user.name;
+      addAuditLog(user, 'CHECKER_APPROVED', stmt.id, `Checker (${user.name}) approved ${stmt.invoiceNumber}.`);
     } else if (action === 'generate_payout_file') {
       if (stmt.makerCheckerStage !== 'Checker Approved') {
-        res.status(400).json({ error: 'Payout file generation requires Finance Checker approval.' });
+        res.status(400).json({ error: 'Payout file generation requires Checker approval.' });
         return;
       }
       stmt.makerCheckerStage = 'Payout File Generated';
@@ -891,6 +1023,10 @@ async function startServer() {
     }
     const message = String(req.body?.message || '').trim();
     const nextStatus = req.body?.status;
+    if (nextStatus === 'Resolved' && !message) {
+      res.status(400).json({ error: 'A documented response/resolution note is required before resolving a ticket or grievance.' });
+      return;
+    }
     if (message) {
       ticket.responses.push({
         timestamp: new Date().toISOString().replace('T', ' ').slice(0, 16),
@@ -900,13 +1036,9 @@ async function startServer() {
       });
     }
     if (['Open', 'In Review', 'Resolved', 'Escalated'].includes(nextStatus)) {
-      if (nextStatus === 'Resolved' && ticket.ticketType === 'Complaint / Grievance' && user.role !== 'COMPANY') {
-        res.status(403).json({ error: 'Per RACI, The Company is Accountable (A) for final Complaint & Grievance closure.' });
-        return;
-      }
       ticket.status = nextStatus;
     }
-    addAuditLog(user, 'TICKET_UPDATED', ticket.id, `Updated ticket ${ticket.id} (${ticket.status}).`);
+    addAuditLog(user, 'TICKET_UPDATED', ticket.id, `Updated ticket ${ticket.id} (${ticket.status}) by ${user.role}.`);
     res.json({ ok: true, ticket });
   });
 
@@ -995,6 +1127,59 @@ async function startServer() {
     });
     addAuditLog(req.authUser!, 'PERIODIC_ACCESS_REVIEW_COMPLETED', 'USER_DIRECTORY', `Completed periodic RBAC & MFA access review.`);
     res.json({ ok: true, reviewedAt: today });
+  });
+
+  // Configurable Maker / Checker User Assignment (FR-51) — prevents self-assignment escalation
+  app.patch('/api/admin/users/:id/maker-checker', requireAuth, requireRoles(['COMPANY', 'LENDRIXVENTECH']), (req: AuthedRequest, res) => {
+    const actor = req.authUser!;
+    const target = getAccountById(req.params.id);
+    if (!target || target.role !== 'LENDRIXVENTECH') {
+      res.status(404).json({ error: 'Configurable Lendrixventech operator account not found.' });
+      return;
+    }
+    if (actor.id === target.id) {
+      addAuditLog(actor, 'MAKER_CHECKER_SELF_CONFIG_BLOCKED', target.id, `Blocked self-modification of Maker-Checker role by ${actor.name}.`);
+      res.status(403).json({ error: 'Administrators cannot modify their own Maker-Checker assignment.' });
+      return;
+    }
+    target.makerCheckerRole = {
+      canActAsMaker: Boolean(req.body?.canActAsMaker),
+      canActAsChecker: Boolean(req.body?.canActAsChecker),
+    };
+    addAuditLog(
+      actor,
+      'MAKER_CHECKER_CONFIG_UPDATED',
+      target.id,
+      `Configured ${target.name}: Maker=${target.makerCheckerRole.canActAsMaker}, Checker=${target.makerCheckerRole.canActAsChecker}.`
+    );
+    res.json({ ok: true, user: target });
+  });
+
+  // Configurable Session Timeout Parameter (Policy remains Pending Confirmation until agreed)
+  app.patch('/api/admin/security-config', requireAuth, requireRoles(['COMPANY', 'LENDRIXVENTECH']), (req: AuthedRequest, res) => {
+    const mins = req.body?.configurableTimeoutMinutes;
+    if (mins !== null && (typeof mins !== 'number' || !Number.isFinite(mins) || mins < 5 || mins > 240)) {
+      res.status(400).json({ error: 'Configurable runtime timeout must be null (Pending Confirmation) or between 5 and 240 minutes.' });
+      return;
+    }
+    securityConfig.configurableTimeoutMinutes = mins;
+    USER_ACCOUNTS.forEach((u) => {
+      u.configuredSessionTimeoutMinutes = mins;
+    });
+    addAuditLog(
+      req.authUser!,
+      'SESSION_TIMEOUT_CONFIG_UPDATED',
+      'SECURITY_CONFIG',
+      `Updated configurable session timeout parameter to ${mins === null ? 'Pending Confirmation (unset)' : `${mins} mins`}.`
+    );
+    res.json({ ok: true, securityConfig });
+  });
+
+  // FR-06 Staff Permission Configuration Guard (locked until authorised permission model is confirmed)
+  app.patch('/api/admin/staff-permissions/:id', requireAuth, requireRoles(['COMPANY', 'LENDRIXVENTECH', 'FRANCHISEE']), (_req, res) => {
+    res.status(403).json({
+      error: 'FR-06 staff permission configuration is locked until the authorised Franchisee staff permission model is confirmed (Pending Confirmation).',
+    });
   });
 
   // Vite dev middleware or production static files

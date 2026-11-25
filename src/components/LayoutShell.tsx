@@ -195,9 +195,11 @@ export function LayoutShell({
         <div className="flex items-center justify-between text-slate-400 pt-2 border-t border-slate-800">
           <span className="inline-flex items-center gap-1">
             <Shield className="h-3.5 w-3.5 text-emerald-400" aria-hidden="true" />
-            <span>MFA Verified</span>
+            <span>MFA Challenge Passed</span>
           </span>
-          <span className="font-mono tabular-nums">{formattedTimeout}</span>
+          <span className="font-mono tabular-nums text-amber-300">
+            {user.configuredSessionTimeoutMinutes ? formattedTimeout : 'Pending'}
+          </span>
         </div>
       </div>
     </div>
@@ -250,11 +252,15 @@ export function LayoutShell({
             <button
               type="button"
               onClick={onSimulateTimeout}
-              title="Verify idle session timeout enforcement"
+              title="Trigger session timeout policy enforcement"
               className="hidden sm:inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 whitespace-nowrap shrink-0"
             >
               <Clock className="h-3.5 w-3.5" aria-hidden="true" />
-              <span className="font-mono tabular-nums">Idle {formattedTimeout}</span>
+              <span className="font-mono tabular-nums">
+                {user.configuredSessionTimeoutMinutes
+                  ? `Idle ${formattedTimeout}`
+                  : 'Timeout: Pending Confirmation'}
+              </span>
             </button>
             <button
               type="button"

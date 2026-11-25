@@ -61,6 +61,10 @@ export function CompanyDashboard({
     summary: '',
   });
   const [ticketReply, setTicketReply] = useState<Record<string, string>>({});
+  const [ticketStatus, setTicketStatus] = useState<Record<string, 'Open' | 'In Review' | 'Escalated' | 'Resolved'>>({});
+  const [timeoutInput, setTimeoutInput] = useState<string>(
+    data.securityConfig?.configurableTimeoutMinutes ? String(data.securityConfig.configurableTimeoutMinutes) : ''
+  );
   const [selectedReport, setSelectedReport] = useState<
     | 'Franchise Network'
     | 'Franchise Activation'
@@ -171,14 +175,14 @@ export function CompanyDashboard({
                 note: 'Activated & non-suspended',
               },
               {
-                label: 'Sales Volume',
+                label: 'Sales',
                 value: formatInr(data.fr50Summary.totalSalesVolume),
                 note: 'Recorded non-rejected transactions',
               },
               {
-                label: 'AUM (MF & VC)',
+                label: 'AUM',
                 value: formatInr(data.fr50Summary.totalAum),
-                note: 'Assets under management',
+                note: 'Mutual Funds & Venture Capital Services',
               },
             ]}
           />
@@ -201,18 +205,18 @@ export function CompanyDashboard({
                 note: 'Suspended or exit initiated',
               },
               {
-                label: 'Total Commission Accrued',
+                label: 'Commission by Product',
                 value: formatInr(
                   data.fr50Summary.commissionByProduct.reduce((sum, item) => sum + item.amount, 0)
                 ),
-                note: 'Split % Pending Confirmation',
+                note: 'Commercial split % Pending Confirmation',
               },
             ]}
           />
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <HorizontalBarChart
-              title="Commission by Product Category (FR-50)"
+              title="Commission by Product (FR-50)"
               subtitle="Accrued gross commission across documented product lines"
               rows={data.fr50Summary.commissionByProduct.map((c) => ({
                 label: c.category,
@@ -222,9 +226,14 @@ export function CompanyDashboard({
 
             <div className="rounded-lg border border-slate-200 bg-white p-5 space-y-3">
               <div className="flex items-center justify-between gap-2">
-                <h2 className="text-sm font-semibold text-slate-900">
-                  Franchisor Governance & Compliance Snapshot
-                </h2>
+                <div>
+                  <h2 className="text-sm font-semibold text-slate-900">
+                    Franchisor Governance & Compliance Snapshot
+                  </h2>
+                  <p className="text-xs text-slate-500">
+                    Supporting operational indicators (supplemental to mandatory FR-50 metrics)
+                  </p>
+                </div>
                 <button
                   type="button"
                   onClick={() => onSelectNav('compliance')}
@@ -773,7 +782,7 @@ export function CompanyDashboard({
                 <tr className="border-b border-slate-200 bg-slate-50 text-slate-600">
                   <th className="py-2.5 px-3 font-semibold">Franchisee</th>
                   <th className="py-2.5 px-3 font-semibold">Product Line</th>
-                  <th className="py-2.5 px-3 font-semibold">Licence / Registration</th>
+                  <th className="py-2.5 px-3 font-semibold">Licence Category & Jurisdiction</th>
                   <th className="py-2.5 px-3 font-semibold">Reg. Number</th>
                   <th className="py-2.5 px-3 font-semibold">Expiry Date</th>
                   <th className="py-2.5 px-3 font-semibold">Status & Distribution Gate</th>
@@ -787,7 +796,10 @@ export function CompanyDashboard({
                     <tr key={lic.id} className="hover:bg-slate-50/70">
                       <td className="py-3 px-3 font-medium text-slate-900">{lic.franchiseeName}</td>
                       <td className="py-3 px-3 text-slate-700">{lic.productCategory}</td>
-                      <td className="py-3 px-3 text-slate-700">{lic.licenceType}</td>
+                      <td className="py-3 px-3">
+                        <div className="text-slate-700">{lic.licenceType}</div>
+                        <div className="text-amber-700">{lic.jurisdictionScope}</div>
+                      </td>
                       <td className="py-3 px-3 font-mono text-slate-800">{lic.registrationNumber}</td>
                       <td className="py-3 px-3 font-mono tabular-nums text-slate-600">{lic.expiryDate}</td>
                       <td className="py-3 px-3 space-y-0.5">
@@ -888,8 +900,9 @@ export function CompanyDashboard({
           </div>
 
           <div className="rounded-lg border border-slate-200 bg-white overflow-x-auto">
-            <div className="px-4 py-3 border-b border-slate-200">
+            <div className="px-4 py-3 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2">
               <h2 className="text-sm font-semibold text-slate-900">Statements, Reconciliation, Clawbacks & Payout Status</h2>
+              <span className="text-xs text-slate-500">Illustrative baseline amounts; commercial split % and payout dates remain Pending Confirmation</span>
             </div>
             <table className="w-full text-left border-collapse text-xs">
               <thead>
@@ -1030,34 +1043,51 @@ export function CompanyDashboard({
                   ))}
                 </div>
                 {t.status !== 'Resolved' && (
-                  <div className="flex flex-wrap gap-2 pt-1">
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
                     <input
-                      placeholder="Add governance resolution note..."
+                      placeholder="Add response or resolution note..."
                       value={ticketReply[t.id] || ''}
                       onChange={(e) => setTicketReply({ ...ticketReply, [t.id]: e.target.value })}
                       className="flex-1 min-w-[200px] rounded border border-slate-300 px-3 py-1.5 text-xs"
                     />
+                    <select
+                      aria-label={`Ticket status for ${t.id}`}
+                      value={ticketStatus[t.id] || t.status}
+                      onChange={(e) =>
+                        setTicketStatus({
+                          ...ticketStatus,
+                          [t.id]: e.target.value as 'Open' | 'In Review' | 'Escalated' | 'Resolved',
+                        })
+                      }
+                      className="rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-800"
+                    >
+                      <option value="Open">Open</option>
+                      <option value="In Review">In Review</option>
+                      <option value="Escalated">Escalated</option>
+                      <option value="Resolved">Resolved</option>
+                    </select>
                     <button
                       type="button"
                       disabled={busy}
-                      onClick={() =>
+                      onClick={() => {
+                        const targetStatus = ticketStatus[t.id] || 'In Review';
                         runAction(
                           async () => {
                             await apiRequest(token, `/api/tickets/${t.id}/respond`, {
                               method: 'POST',
                               body: JSON.stringify({
-                                message: ticketReply[t.id] || 'Company approved resolution.',
-                                status: 'Resolved',
+                                message: ticketReply[t.id] || `Status updated to ${targetStatus}.`,
+                                status: targetStatus,
                               }),
                             });
                             setTicketReply({ ...ticketReply, [t.id]: '' });
                           },
-                          `Resolved ${t.id}.`
-                        )
-                      }
+                          `Updated ticket ${t.id} to ${targetStatus}.`
+                        );
+                      }}
                       className="rounded bg-blue-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-800 whitespace-nowrap"
                     >
-                      Approve Resolution
+                      Update Ticket
                     </button>
                   </div>
                 )}
@@ -1327,6 +1357,147 @@ export function CompanyDashboard({
               </button>
             }
           />
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="rounded-lg border border-slate-200 bg-white p-5 space-y-3 text-xs">
+              <h2 className="text-sm font-semibold text-slate-900">
+                Security, MFA & Configurable Session Timeout (Section 10)
+              </h2>
+              <div className="divide-y divide-slate-100">
+                <div className="py-2 flex justify-between gap-4">
+                  <span className="text-slate-600">MFA Mode</span>
+                  <span className="font-medium text-slate-900">{data.securityConfig.mfaVerificationMode}</span>
+                </div>
+                <div className="py-2 flex justify-between gap-4">
+                  <span className="text-slate-600">External MFA / Authenticator Provider</span>
+                  <StatusLabel text={data.securityConfig.mfaIntegrationStatus} tone="warning" />
+                </div>
+                <div className="py-2 flex justify-between gap-4">
+                  <span className="text-slate-600">Session Timeout Policy</span>
+                  <PendingValue
+                    label={
+                      data.securityConfig.configurableTimeoutMinutes
+                        ? `Configured: ${data.securityConfig.configurableTimeoutMinutes} mins (Policy Pending Confirmation)`
+                        : data.securityConfig.sessionTimeoutPolicy
+                    }
+                  />
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <input
+                  type="number"
+                  min={5}
+                  max={240}
+                  placeholder="Minutes (5-240)"
+                  value={timeoutInput}
+                  onChange={(e) => setTimeoutInput(e.target.value)}
+                  className="w-36 rounded border border-slate-300 px-2.5 py-1.5 font-mono text-xs"
+                />
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() =>
+                    runAction(
+                      () =>
+                        apiRequest(token, '/api/admin/security-config', {
+                          method: 'PATCH',
+                          body: JSON.stringify({
+                            configurableTimeoutMinutes: timeoutInput.trim() ? Number(timeoutInput) : null,
+                          }),
+                        }),
+                      'Updated configurable session timeout parameter.'
+                    )
+                  }
+                  className="rounded bg-blue-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-800 whitespace-nowrap"
+                >
+                  Apply Timeout
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => {
+                    setTimeoutInput('');
+                    runAction(
+                      () =>
+                        apiRequest(token, '/api/admin/security-config', {
+                          method: 'PATCH',
+                          body: JSON.stringify({ configurableTimeoutMinutes: null }),
+                        }),
+                      'Reset session timeout parameter to Pending Confirmation.'
+                    );
+                  }}
+                  className="rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
+                >
+                  Set Pending
+                </button>
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-slate-200 bg-white p-5 space-y-3 text-xs">
+              <h2 className="text-sm font-semibold text-slate-900">
+                Configurable Maker-Checker Assignments (FR-51)
+              </h2>
+              <p className="text-slate-500">
+                Maker and Checker remain distinct actors for payout approval without fixed named business titles.
+              </p>
+              <div className="divide-y divide-slate-100">
+                {data.staffAccounts
+                  .filter((u) => u.role === 'LENDRIXVENTECH')
+                  .map((op) => (
+                    <div key={op.id} className="py-2.5 flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <div className="font-medium text-slate-900">{op.name}</div>
+                        <div className="font-mono text-slate-500">{op.email}</div>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <label className="inline-flex items-center gap-1.5 text-slate-700">
+                          <input
+                            type="checkbox"
+                            disabled={busy}
+                            checked={Boolean(op.makerCheckerRole?.canActAsMaker)}
+                            onChange={(e) =>
+                              runAction(
+                                () =>
+                                  apiRequest(token, `/api/admin/users/${op.id}/maker-checker`, {
+                                    method: 'PATCH',
+                                    body: JSON.stringify({
+                                      canActAsMaker: e.target.checked,
+                                      canActAsChecker: Boolean(op.makerCheckerRole?.canActAsChecker),
+                                    }),
+                                  }),
+                                `Updated Maker role for ${op.name}.`
+                              )
+                            }
+                          />
+                          <span>Maker</span>
+                        </label>
+                        <label className="inline-flex items-center gap-1.5 text-slate-700">
+                          <input
+                            type="checkbox"
+                            disabled={busy}
+                            checked={Boolean(op.makerCheckerRole?.canActAsChecker)}
+                            onChange={(e) =>
+                              runAction(
+                                () =>
+                                  apiRequest(token, `/api/admin/users/${op.id}/maker-checker`, {
+                                    method: 'PATCH',
+                                    body: JSON.stringify({
+                                      canActAsMaker: Boolean(op.makerCheckerRole?.canActAsMaker),
+                                      canActAsChecker: e.target.checked,
+                                    }),
+                                  }),
+                                `Updated Checker role for ${op.name}.`
+                              )
+                            }
+                          />
+                          <span>Checker</span>
+                        </label>
+                      </div>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div className="rounded-lg border border-slate-200 bg-white overflow-hidden">

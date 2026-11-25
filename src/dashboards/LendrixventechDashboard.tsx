@@ -51,7 +51,12 @@ export function LendrixventechDashboard({
     productInterest: 'Mutual Funds' as ProductCategory,
   });
   const [clawbackForm, setClawbackForm] = useState<Record<string, { clawback: string; adj: string }>>({});
+  const [verifySourceInput, setVerifySourceInput] = useState<Record<string, string>>({});
   const [ticketReply, setTicketReply] = useState<Record<string, string>>({});
+  const [ticketStatus, setTicketStatus] = useState<Record<string, 'Open' | 'In Review' | 'Escalated' | 'Resolved'>>({});
+  const [timeoutInput, setTimeoutInput] = useState<string>(
+    data.securityConfig?.configurableTimeoutMinutes ? String(data.securityConfig.configurableTimeoutMinutes) : ''
+  );
   const [newCircular, setNewCircular] = useState({
     title: '',
     type: 'Product Circular' as 'Product Circular' | 'Announcement' | 'Marketing Material',
@@ -225,7 +230,7 @@ export function LendrixventechDashboard({
                   <div>
                     <div className="font-medium text-slate-900">Product Distribution & Eligibility Sync</div>
                     <div className="text-slate-500">
-                      {data.transactions.length} transactions ({data.transactions.filter((t) => t.eligibilityStatus === 'Pending').length} pending eligibility)
+                      {data.transactions.length} transactions ({data.transactions.filter((t) => t.eligibilityStatus === 'Awaiting Verification').length} awaiting verification)
                     </div>
                   </div>
                   <button
@@ -370,7 +375,7 @@ export function LendrixventechDashboard({
                                   method: 'PATCH',
                                   body: JSON.stringify({
                                     action: 'assign_rm',
-                                    relationshipManager: rmInput[f.id] || 'Kavita Iyer (RM-West-02)',
+                                    relationshipManager: rmInput[f.id] || 'Assigned Relationship Manager',
                                   }),
                                 }),
                               `Assigned relationship manager for ${f.franchiseeCode}.`
@@ -454,8 +459,8 @@ export function LendrixventechDashboard({
               },
               {
                 label: 'External Integrations (FR-52)',
-                value: '0 / 6 Connected',
-                note: 'No external provider keys connected',
+                value: `0 / ${data.integrations.length} Connected`,
+                note: 'FR-52 categories unconfigured; External MFA Provider Not Connected',
               },
               {
                 label: 'Breach Notification Window',
@@ -712,74 +717,110 @@ export function LendrixventechDashboard({
             )}
           </div>
 
+          <NoticeBanner
+            tone="warning"
+            title="Manufacturer Verification Rule (FR-52)"
+            message="Manufacturer approval, issuance, or execution must be validated via connected FR-52 integrations (all 7 currently Not Connected). Manually entered source references cannot verify transaction eligibility; unverified transactions remain Awaiting Verification with zero accrued commission."
+          />
+
           <div className="rounded-lg border border-slate-200 bg-white overflow-x-auto">
             <table className="w-full text-left border-collapse text-xs">
               <thead>
                 <tr className="border-b border-slate-200 bg-slate-50 text-slate-600">
                   <th className="py-2.5 px-3 font-semibold">Transaction & Product</th>
                   <th className="py-2.5 px-3 font-semibold">Franchisee</th>
-                  <th className="py-2.5 px-3 font-semibold">Workflow Details</th>
+                  <th className="py-2.5 px-3 font-semibold">Workflow & Product Rule</th>
                   <th className="py-2.5 px-3 font-semibold text-right">Amount</th>
-                  <th className="py-2.5 px-3 font-semibold">Manufacturer & Eligibility</th>
-                  <th className="py-2.5 px-3 font-semibold text-right">Ops Update</th>
+                  <th className="py-2.5 px-3 font-semibold">Manufacturer & Integration Status</th>
+                  <th className="py-2.5 px-3 font-semibold text-right">Verification Gate</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200">
                 {data.transactions
                   .filter((t) => distCategory === 'ALL' || t.productCategory === distCategory)
-                  .map((t) => (
-                    <tr key={t.id}>
-                      <td className="py-3 px-3 align-top">
-                        <div className="font-mono font-semibold text-slate-900">{t.id.toUpperCase()}</div>
-                        <div className="font-medium text-slate-800">{t.productCategory}</div>
-                        <div className="text-slate-500">{t.productName}</div>
-                      </td>
-                      <td className="py-3 px-3 align-top text-slate-700">{t.franchiseeName}</td>
-                      <td className="py-3 px-3 align-top max-w-xs text-slate-600">
-                        <div>{t.workflowSummary}</div>
-                        {t.vcChecklist && (
-                          <div className="mt-1 text-slate-500">
-                            VC: Eligibility {t.vcChecklist.investorEligibilityPassed ? 'OK' : 'Pending'} · Suitability {t.vcChecklist.suitabilityPassed ? 'OK' : 'Pending'} · Data Room {t.vcChecklist.dataRoomAccessGranted ? 'Granted' : 'Locked'}
+                  .map((t) => {
+                    const requiredMfgStatus =
+                      t.productCategory === 'Loans'
+                        ? 'Disbursed'
+                        : t.productCategory === 'Insurance'
+                          ? 'Policy Issued'
+                          : t.productCategory === 'Real Estate'
+                            ? 'Booked'
+                            : t.productCategory === 'Mutual Funds'
+                              ? 'Allotted / Executed'
+                              : 'Subscription Accepted';
+                    return (
+                      <tr key={t.id}>
+                        <td className="py-3 px-3 align-top">
+                          <div className="font-mono font-semibold text-slate-900">{t.id.toUpperCase()}</div>
+                          <div className="font-medium text-slate-800">{t.productCategory}</div>
+                          <div className="text-slate-500">{t.productName}</div>
+                        </td>
+                        <td className="py-3 px-3 align-top text-slate-700">{t.franchiseeName}</td>
+                        <td className="py-3 px-3 align-top max-w-xs text-slate-600 space-y-1">
+                          <div>{t.workflowSummary}</div>
+                          <div className="text-slate-500">Rule: {t.eligibleStatusRule}</div>
+                          {t.vcChecklist && (
+                            <div className="text-slate-500">
+                              VC: Eligibility {t.vcChecklist.investorEligibilityPassed ? 'OK' : 'Pending'} · Suitability {t.vcChecklist.suitabilityPassed ? 'OK' : 'Pending'} · Data Room {t.vcChecklist.dataRoomAccessGranted ? 'Granted' : 'Locked'}
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-3 px-3 align-top text-right font-mono tabular-nums font-medium text-slate-900">
+                          {formatInr(t.amount)}
+                        </td>
+                        <td className="py-3 px-3 align-top space-y-1">
+                          <div><StatusLabel text={t.manufacturerStatus} /></div>
+                          <div>Eligibility: <StatusLabel text={t.eligibilityStatus} /></div>
+                          <div className="text-amber-700 font-medium">
+                            {t.integrationSourceStatus}
                           </div>
-                        )}
-                      </td>
-                      <td className="py-3 px-3 align-top text-right font-mono tabular-nums font-medium text-slate-900">
-                        {formatInr(t.amount)}
-                      </td>
-                      <td className="py-3 px-3 align-top space-y-1">
-                        <div><StatusLabel text={t.manufacturerStatus} /></div>
-                        <div>Eligibility: <StatusLabel text={t.eligibilityStatus} /></div>
-                      </td>
-                      <td className="py-3 px-3 align-top text-right">
-                        {t.eligibilityStatus !== 'Eligible' ? (
-                          <button
-                            type="button"
-                            disabled={busy}
-                            onClick={() =>
-                              runAction(
-                                () =>
-                                  apiRequest(token, `/api/transactions/${t.id}`, {
-                                    method: 'PATCH',
-                                    body: JSON.stringify({
-                                      manufacturerStatus: t.productCategory === 'Loans' ? 'Disbursed' : 'Approved / Issued',
-                                      eligibilityStatus: 'Eligible',
-                                    }),
-                                  }),
-                                `Marked ${t.id} Eligible; commission accrued.`
-                              )
-                            }
-                            className="rounded bg-blue-700 px-2.5 py-1 text-xs font-medium text-white hover:bg-blue-800 whitespace-nowrap"
-                          >
-                            Confirm Eligible
-                          </button>
-                        ) : (
-                          <span className="font-mono text-slate-500 tabular-nums">
-                            Accrued {formatInr(t.commissionAccrued)}
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
+                          {t.verifiedSourceReference && (
+                            <div className="font-mono text-slate-500">{t.verifiedSourceReference}</div>
+                          )}
+                        </td>
+                        <td className="py-3 px-3 align-top text-right">
+                          {t.eligibilityStatus !== 'Eligible' ? (
+                            <div className="flex flex-col items-end gap-1.5">
+                              <input
+                                placeholder="Ref note (does not verify eligibility)..."
+                                value={verifySourceInput[t.id] || ''}
+                                onChange={(e) =>
+                                  setVerifySourceInput({ ...verifySourceInput, [t.id]: e.target.value })
+                                }
+                                className="w-52 rounded border border-slate-300 px-2 py-1 text-xs"
+                              />
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() =>
+                                  runAction(
+                                    () =>
+                                      apiRequest(token, `/api/transactions/${t.id}`, {
+                                        method: 'PATCH',
+                                        body: JSON.stringify({
+                                          manufacturerStatus: requiredMfgStatus,
+                                          eligibilityStatus: 'Eligible',
+                                          verifiedSourceReference: verifySourceInput[t.id] || '',
+                                        }),
+                                      }),
+                                    `Updated ${t.id}.`
+                                  )
+                                }
+                                className="rounded border border-amber-300 bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-800 hover:bg-amber-100 whitespace-nowrap"
+                              >
+                                Verify (Requires FR-52 Connected)
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="font-mono text-slate-600 tabular-nums">
+                              Accrued {formatInr(t.commissionAccrued)}
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
               </tbody>
             </table>
           </div>
@@ -797,7 +838,7 @@ export function LendrixventechDashboard({
           <NoticeBanner
             tone="info"
             title="Maker-Checker Separation (FR-51)"
-            message={`Logged in as ${data.user.name}. A Finance Checker distinct from the Maker must approve submitted statements before payout file generation.`}
+            message={`Logged in as ${data.user.name} (Maker=${data.user.makerCheckerRole?.canActAsMaker ? 'Yes' : 'No'}, Checker=${data.user.makerCheckerRole?.canActAsChecker ? 'Yes' : 'No'}). A distinct Checker actor must approve submitted statements before payout file generation. User assignments are configurable in Administration.`}
           />
 
           <div className="space-y-3">
@@ -898,7 +939,7 @@ export function LendrixventechDashboard({
                                 method: 'POST',
                                 body: JSON.stringify({ action: 'checker_approve' }),
                               }),
-                            `Finance Checker approved ${s.invoiceNumber}.`
+                            `Distinct Checker approved ${s.invoiceNumber}.`
                           )
                         }
                         className="rounded bg-blue-700 px-2.5 py-1 text-xs font-medium text-white hover:bg-blue-800 whitespace-nowrap"
@@ -1056,7 +1097,7 @@ export function LendrixventechDashboard({
         <div className="space-y-6">
           <SectionHeader
             title="Service Desk Operations (FR-41)"
-            subtitle="First-response and resolution SLAs remain Pending Confirmation (Draft placeholders: [4 hours] / [2 working days]). Grievance closure remains Accountable to The Company."
+            subtitle="First-response and resolution SLAs remain Pending Confirmation (Draft placeholders: [4 hours] / [2 working days]). RACI: Company (A), Lendrixventech (R), Franchisee (R)."
             raci={raciMap['Complaints and grievance handling']}
           />
 
@@ -1081,34 +1122,51 @@ export function LendrixventechDashboard({
                   ))}
                 </div>
                 {t.status !== 'Resolved' && (
-                  <div className="flex flex-wrap gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <input
-                      placeholder="Operational support response..."
+                      placeholder="Operational support or grievance response..."
                       value={ticketReply[t.id] || ''}
                       onChange={(e) => setTicketReply({ ...ticketReply, [t.id]: e.target.value })}
                       className="flex-1 min-w-[200px] rounded border border-slate-300 px-3 py-1.5 text-xs"
                     />
+                    <select
+                      aria-label={`Ticket status for ${t.id}`}
+                      value={ticketStatus[t.id] || t.status}
+                      onChange={(e) =>
+                        setTicketStatus({
+                          ...ticketStatus,
+                          [t.id]: e.target.value as 'Open' | 'In Review' | 'Escalated' | 'Resolved',
+                        })
+                      }
+                      className="rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-800"
+                    >
+                      <option value="Open">Open</option>
+                      <option value="In Review">In Review</option>
+                      <option value="Escalated">Escalated</option>
+                      <option value="Resolved">Resolved</option>
+                    </select>
                     <button
                       type="button"
                       disabled={busy}
-                      onClick={() =>
+                      onClick={() => {
+                        const nextStatus = ticketStatus[t.id] || 'In Review';
                         runAction(
                           async () => {
                             await apiRequest(token, `/api/tickets/${t.id}/respond`, {
                               method: 'POST',
                               body: JSON.stringify({
-                                message: ticketReply[t.id] || 'Operational response logged.',
-                                status: t.ticketType === 'Service Desk' ? 'Resolved' : 'In Review',
+                                message: ticketReply[t.id] || `Response logged (${nextStatus}).`,
+                                status: nextStatus,
                               }),
                             });
                             setTicketReply({ ...ticketReply, [t.id]: '' });
                           },
-                          `Updated ticket ${t.id}.`
-                        )
-                      }
+                          `Updated ticket ${t.id} (${nextStatus}).`
+                        );
+                      }}
                       className="rounded bg-blue-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-800 whitespace-nowrap"
                     >
-                      {t.ticketType === 'Service Desk' ? 'Respond & Resolve' : 'Log Response (Escalate to Company)'}
+                      Log Update
                     </button>
                   </div>
                 )}
@@ -1294,8 +1352,131 @@ export function LendrixventechDashboard({
         <div className="space-y-6">
           <SectionHeader
             title="Administration and Audit (FR-51, FR-53)"
-            subtitle="Role-based operator directory, periodic access review, and platform audit log."
+            subtitle="Configurable Maker-Checker assignments, session security controls, FR-06 staff permission lock status, and platform audit log."
           />
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="rounded-lg border border-slate-200 bg-white p-5 space-y-3 text-xs">
+              <h2 className="text-sm font-semibold text-slate-900">
+                Configurable Maker-Checker User Assignment (FR-51)
+              </h2>
+              <p className="text-slate-500">
+                Assign Maker and Checker capabilities across Lendrixventech operator accounts (Checker must differ from Maker).
+              </p>
+              <div className="divide-y divide-slate-100">
+                {data.staffAccounts
+                  .filter((u) => u.role === 'LENDRIXVENTECH')
+                  .map((op) => (
+                    <div key={op.id} className="py-2.5 flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <div className="font-medium text-slate-900">{op.name}</div>
+                        <div className="font-mono text-slate-500">{op.email}</div>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <label className="inline-flex items-center gap-1.5 text-slate-700">
+                          <input
+                            type="checkbox"
+                            disabled={busy}
+                            checked={Boolean(op.makerCheckerRole?.canActAsMaker)}
+                            onChange={(e) =>
+                              runAction(
+                                () =>
+                                  apiRequest(token, `/api/admin/users/${op.id}/maker-checker`, {
+                                    method: 'PATCH',
+                                    body: JSON.stringify({
+                                      canActAsMaker: e.target.checked,
+                                      canActAsChecker: Boolean(op.makerCheckerRole?.canActAsChecker),
+                                    }),
+                                  }),
+                                `Updated Maker capability for ${op.name}.`
+                              )
+                            }
+                          />
+                          <span>Maker</span>
+                        </label>
+                        <label className="inline-flex items-center gap-1.5 text-slate-700">
+                          <input
+                            type="checkbox"
+                            disabled={busy}
+                            checked={Boolean(op.makerCheckerRole?.canActAsChecker)}
+                            onChange={(e) =>
+                              runAction(
+                                () =>
+                                  apiRequest(token, `/api/admin/users/${op.id}/maker-checker`, {
+                                    method: 'PATCH',
+                                    body: JSON.stringify({
+                                      canActAsMaker: Boolean(op.makerCheckerRole?.canActAsMaker),
+                                      canActAsChecker: e.target.checked,
+                                    }),
+                                  }),
+                                `Updated Checker capability for ${op.name}.`
+                              )
+                            }
+                          />
+                          <span>Checker</span>
+                        </label>
+                      </div>
+                    </div>
+                  ))}
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-slate-200 bg-white p-5 space-y-3 text-xs">
+              <h2 className="text-sm font-semibold text-slate-900">
+                Session Timeout, MFA & FR-06 Staff Permission Status
+              </h2>
+              <div className="divide-y divide-slate-100">
+                <div className="py-2 flex justify-between gap-4">
+                  <span className="text-slate-600">External MFA Provider</span>
+                  <StatusLabel text={data.securityConfig.mfaIntegrationStatus} tone="warning" />
+                </div>
+                <div className="py-2 flex justify-between gap-4">
+                  <span className="text-slate-600">Session Timeout Policy</span>
+                  <PendingValue
+                    label={
+                      data.securityConfig.configurableTimeoutMinutes
+                        ? `Configured: ${data.securityConfig.configurableTimeoutMinutes} mins (Policy Pending Confirmation)`
+                        : data.securityConfig.sessionTimeoutPolicy
+                    }
+                  />
+                </div>
+                <div className="py-2 flex justify-between gap-4">
+                  <span className="text-slate-600">FR-06 Staff Permission Matrix</span>
+                  <PendingValue label="Locked — Pending Confirmation" />
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <input
+                  type="number"
+                  min={5}
+                  max={240}
+                  placeholder="Minutes (5-240)"
+                  value={timeoutInput}
+                  onChange={(e) => setTimeoutInput(e.target.value)}
+                  className="w-36 rounded border border-slate-300 px-2.5 py-1.5 font-mono text-xs"
+                />
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() =>
+                    runAction(
+                      () =>
+                        apiRequest(token, '/api/admin/security-config', {
+                          method: 'PATCH',
+                          body: JSON.stringify({
+                            configurableTimeoutMinutes: timeoutInput.trim() ? Number(timeoutInput) : null,
+                          }),
+                        }),
+                      'Updated configurable session timeout parameter.'
+                    )
+                  }
+                  className="rounded bg-blue-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-800 whitespace-nowrap"
+                >
+                  Apply Timeout
+                </button>
+              </div>
+            </div>
+          </div>
 
           <div className="rounded-lg border border-slate-200 bg-white overflow-x-auto">
             <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between">

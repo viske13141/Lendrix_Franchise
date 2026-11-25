@@ -103,6 +103,8 @@ export function FranchiseeDashboard({
     subject: '',
     description: '',
   });
+  const [ticketReply, setTicketReply] = useState<Record<string, string>>({});
+  const [ticketStatus, setTicketStatus] = useState<Record<string, 'Open' | 'In Review' | 'Escalated' | 'Resolved'>>({});
   const [renewalReg, setRenewalReg] = useState<Record<string, { reg: string; expiry: string }>>({});
 
   async function runAction(fn: () => Promise<unknown>, successMsg: string) {
@@ -955,6 +957,10 @@ export function FranchiseeDashboard({
                     <td className="py-3 px-3 align-top space-y-1">
                       <div><StatusLabel text={t.manufacturerStatus} /></div>
                       <div>Eligibility: <StatusLabel text={t.eligibilityStatus} /></div>
+                      <div className="text-amber-700 font-medium">
+                        {t.integrationSourceStatus}
+                      </div>
+                      <div className="text-slate-500">{t.eligibleStatusRule}</div>
                     </td>
                     <td className="py-3 px-3 align-top space-y-1.5">
                       <div className="font-medium text-slate-800">{t.postSaleServicing.type}</div>
@@ -1186,6 +1192,55 @@ export function FranchiseeDashboard({
                     <span className="font-medium text-slate-800">{r.actor}</span> ({r.timestamp}): {r.message}
                   </div>
                 ))}
+                {t.status !== 'Resolved' && (
+                  <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100">
+                    <input
+                      placeholder="Add Franchisee response or update..."
+                      value={ticketReply[t.id] || ''}
+                      onChange={(e) => setTicketReply({ ...ticketReply, [t.id]: e.target.value })}
+                      className="flex-1 min-w-[200px] rounded border border-slate-300 px-3 py-1.5 text-xs"
+                    />
+                    <select
+                      aria-label={`Ticket status for ${t.id}`}
+                      value={ticketStatus[t.id] || t.status}
+                      onChange={(e) =>
+                        setTicketStatus({
+                          ...ticketStatus,
+                          [t.id]: e.target.value as 'Open' | 'In Review' | 'Escalated' | 'Resolved',
+                        })
+                      }
+                      className="rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-800"
+                    >
+                      <option value="Open">Open</option>
+                      <option value="In Review">In Review</option>
+                      <option value="Escalated">Escalated</option>
+                      <option value="Resolved">Resolved</option>
+                    </select>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => {
+                        const nextStatus = ticketStatus[t.id] || 'In Review';
+                        runAction(
+                          async () => {
+                            await apiRequest(token, `/api/tickets/${t.id}/respond`, {
+                              method: 'POST',
+                              body: JSON.stringify({
+                                message: ticketReply[t.id] || `Franchisee update logged (${nextStatus}).`,
+                                status: nextStatus,
+                              }),
+                            });
+                            setTicketReply({ ...ticketReply, [t.id]: '' });
+                          },
+                          `Updated ticket ${t.id} (${nextStatus}).`
+                        );
+                      }}
+                      className="rounded border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
+                    >
+                      Send Update
+                    </button>
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -1255,7 +1310,7 @@ export function FranchiseeDashboard({
               <thead>
                 <tr className="border-b border-slate-200 bg-slate-50 text-slate-600">
                   <th className="py-2.5 px-3 font-semibold">Product Line</th>
-                  <th className="py-2.5 px-3 font-semibold">Licence / Registration</th>
+                  <th className="py-2.5 px-3 font-semibold">Licence Category & Jurisdiction</th>
                   <th className="py-2.5 px-3 font-semibold">Reg. Number & Expiry</th>
                   <th className="py-2.5 px-3 font-semibold">Verification Status</th>
                   <th className="py-2.5 px-3 font-semibold text-right">Submit Renewal / Update (R)</th>
@@ -1265,7 +1320,10 @@ export function FranchiseeDashboard({
                 {data.licences.map((lic) => (
                   <tr key={lic.id}>
                     <td className="py-3 px-3 font-medium text-slate-900">{lic.productCategory}</td>
-                    <td className="py-3 px-3 text-slate-700">{lic.licenceType}</td>
+                    <td className="py-3 px-3">
+                      <div className="text-slate-700">{lic.licenceType}</div>
+                      <div className="text-amber-700">{lic.jurisdictionScope}</div>
+                    </td>
                     <td className="py-3 px-3 font-mono text-slate-700">
                       <div>{lic.registrationNumber}</div>
                       <div className="text-slate-500">Exp: {lic.expiryDate}</div>

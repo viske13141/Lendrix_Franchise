@@ -1,6 +1,5 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { ArrowRight } from 'lucide-react';
-import { apiRequest } from '../api/client';
 import { LayoutShell } from '../components/LayoutShell';
 import {
   EmptyState,
@@ -13,12 +12,10 @@ import {
 import type { DashboardPayload } from '../shared/types';
 
 export function StaffWorkspace({
-  token,
   data,
   activeNav,
   onSelectNav,
   routeNotice,
-  onRefresh,
   onLogout,
   onSimulateTimeout,
 }: {
@@ -31,26 +28,8 @@ export function StaffWorkspace({
   onLogout: () => void;
   onSimulateTimeout: () => void;
 }) {
-  const [feedback, setFeedback] = useState<{ tone: 'info' | 'danger'; msg: string } | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [followUpNote, setFollowUpNote] = useState<Record<string, string>>({});
-
   const parentFranchisee = data.franchises[0];
   const perms = data.user.staffPermissions;
-
-  async function runAction(fn: () => Promise<unknown>, successMsg: string) {
-    setBusy(true);
-    setFeedback(null);
-    try {
-      await fn();
-      await onRefresh();
-      setFeedback({ tone: 'info', msg: successMsg });
-    } catch (err) {
-      setFeedback({ tone: 'danger', msg: err instanceof Error ? err.message : 'Action failed.' });
-    } finally {
-      setBusy(false);
-    }
-  }
 
   return (
     <LayoutShell
@@ -58,7 +37,6 @@ export function StaffWorkspace({
       activeNavId={activeNav}
       onSelectNav={(id) => {
         onSelectNav(id);
-        setFeedback(null);
       }}
       sessionExpiresAt={data.sessionExpiresAt}
       onLogout={onLogout}
@@ -66,14 +44,6 @@ export function StaffWorkspace({
     >
       {routeNotice && (
         <NoticeBanner tone="warning" title="Route Protection" message={routeNotice} />
-      )}
-
-      {feedback && (
-        <NoticeBanner
-          tone={feedback.tone === 'danger' ? 'danger' : 'info'}
-          title={feedback.tone === 'danger' ? 'Access Denied' : 'Activity Updated'}
-          message={feedback.msg}
-        />
       )}
 
       <NoticeBanner
@@ -99,19 +69,19 @@ export function StaffWorkspace({
                   : undefined,
               },
               {
-                label: 'Assigned Leads',
-                value: String(data.leads.length),
-                note: 'Scoped strictly to your assignments',
-              },
-              {
-                label: 'Assigned Customer Follow-Ups',
-                value: String(data.customers.length),
-                note: 'Serving Franchisee isolated',
-              },
-              {
-                label: 'Additional Staff Permissions',
+                label: 'Assigned Leads Access',
                 value: 'Pending',
-                note: perms?.undefinedPermissionsStatus || 'Pending Confirmation',
+                note: perms?.assignedLeadsAccess || 'Pending Confirmation',
+              },
+              {
+                label: 'Customer Follow-Up Access',
+                value: 'Pending',
+                note: perms?.customerFollowUpAccess || 'Pending Confirmation',
+              },
+              {
+                label: 'FR-06 Permission Matrix',
+                value: 'Pending',
+                note: perms?.permissionModelStatus || 'Pending Confirmation',
               },
             ]}
           />
@@ -143,58 +113,58 @@ export function StaffWorkspace({
                   </span>
                 </div>
                 <div className="py-2 flex justify-between gap-4">
-                  <span className="text-slate-500">MFA & Idle Timeout</span>
-                  <span className="font-mono tabular-nums text-right">
-                    {data.user.mfaEnabled ? 'MFA Enabled' : 'Disabled'} · {data.user.sessionTimeoutMinutes} mins
-                  </span>
+                  <span className="text-slate-500">MFA Mode</span>
+                  <span className="text-right text-slate-800">{data.user.mfaMode}</span>
+                </div>
+                <div className="py-2 flex justify-between gap-4">
+                  <span className="text-slate-500">Session Timeout Policy</span>
+                  <PendingValue
+                    label={
+                      data.user.configuredSessionTimeoutMinutes
+                        ? `Configured: ${data.user.configuredSessionTimeoutMinutes} mins (Policy Pending Confirmation)`
+                        : data.user.sessionTimeoutPolicy
+                    }
+                  />
                 </div>
               </div>
             </div>
 
             <div className="rounded-lg border border-slate-200 bg-white p-5 space-y-3 text-xs">
-              <h2 className="text-sm font-semibold text-slate-900">Confirmed Permission Boundary (FR-06)</h2>
+              <h2 className="text-sm font-semibold text-slate-900">Permission Matrix Status (FR-06)</h2>
               <div className="divide-y divide-slate-100">
                 <div className="py-2 flex justify-between gap-4">
                   <span className="text-slate-600">Assigned Franchisee Leads</span>
-                  <StatusLabel text={perms?.assignedLeadsView ? 'Permitted' : 'Not Permitted'} tone="nominal" />
+                  <PendingValue label={perms?.assignedLeadsAccess || 'Pending Confirmation'} />
                 </div>
                 <div className="py-2 flex justify-between gap-4">
-                  <span className="text-slate-600">Assigned Customer Follow-Up Logging</span>
-                  <StatusLabel text={perms?.customerFollowUps ? 'Permitted' : 'Not Permitted'} tone="nominal" />
+                  <span className="text-slate-600">Assigned Customer Follow-Ups</span>
+                  <PendingValue label={perms?.customerFollowUpAccess || 'Pending Confirmation'} />
                 </div>
                 <div className="py-2 flex justify-between gap-4">
-                  <span className="text-slate-600">Commission Rules & Configuration</span>
-                  <StatusLabel text={perms?.commissionConfig || 'Not Permitted'} tone="danger" />
+                  <span className="text-slate-600">Staff Approval Rights</span>
+                  <StatusLabel text={perms?.approvalRights || 'Not Permitted'} tone="danger" />
                 </div>
                 <div className="py-2 flex justify-between gap-4">
-                  <span className="text-slate-600">Company Administration</span>
-                  <StatusLabel text={perms?.companyAdmin || 'Not Permitted'} tone="danger" />
+                  <span className="text-slate-600">Commission, Company & Lendrixventech Admin</span>
+                  <StatusLabel text={perms?.commissionAndAdminAccess || 'Not Permitted'} tone="danger" />
                 </div>
                 <div className="py-2 flex justify-between gap-4">
-                  <span className="text-slate-600">Lendrixventech Administration</span>
-                  <StatusLabel text={perms?.lendrixAdmin || 'Not Permitted'} tone="danger" />
+                  <span className="text-slate-600">Permission Configuration</span>
+                  <PendingValue label={perms?.permissionModelStatus || 'Pending Confirmation'} />
                 </div>
-                <div className="py-2 flex justify-between gap-4">
-                  <span className="text-slate-600">Undefined Staff Role & Approval Permissions</span>
-                  <PendingValue label={perms?.undefinedPermissionsStatus || 'Pending Confirmation'} />
-                </div>
+              </div>
+              <div className="pt-2 border-t border-slate-100 text-slate-500">
+                {perms?.configurationLockedReason ||
+                  'Permission configuration is locked until the authorised FR-06 permission model is confirmed.'}
               </div>
             </div>
           </div>
 
           <div className="rounded-lg border border-slate-200 bg-white p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
             <div className="space-y-1 text-xs">
-              <h2 className="text-sm font-semibold text-slate-900">Assigned Franchisee Activities</h2>
+              <h2 className="text-sm font-semibold text-slate-900">Assigned Activities (FR-06)</h2>
               <p className="text-slate-600">
-                You currently have{' '}
-                <span className="font-mono font-semibold text-slate-900 tabular-nums">
-                  {data.leads.length}
-                </span>{' '}
-                assigned lead(s) and{' '}
-                <span className="font-mono font-semibold text-slate-900 tabular-nums">
-                  {data.customers.length}
-                </span>{' '}
-                assigned customer follow-up(s) within {parentFranchisee?.businessName || 'your parent Franchisee'}.
+                Lead and customer follow-up permissions are currently <span className="font-medium text-amber-700">Pending Confirmation</span> until the authorised Franchisee staff permission model is confirmed.
               </p>
             </div>
             <button
@@ -202,7 +172,7 @@ export function StaffWorkspace({
               onClick={() => onSelectNav('activities')}
               className="inline-flex items-center gap-1.5 rounded-md bg-blue-700 px-3.5 py-2 text-xs font-medium text-white hover:bg-blue-800 whitespace-nowrap shrink-0"
             >
-              <span>Open Assigned Activities</span>
+              <span>View Assigned Activities Status</span>
               <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
             </button>
           </div>
@@ -212,17 +182,21 @@ export function StaffWorkspace({
       {activeNav === 'activities' && (
         <div className="space-y-6">
           <SectionHeader
-            title="Assigned Franchisee Activities"
-            subtitle="Only leads and customer follow-up activities explicitly assigned within your parent Franchisee account are accessible."
+            title="Assigned Activities (FR-06)"
+            subtitle="Sub-user activity permissions remain Pending Confirmation until the authorised Franchisee staff permission model is confirmed."
           />
 
           <div className="rounded-lg border border-slate-200 bg-white overflow-x-auto">
-            <div className="px-4 py-3 border-b border-slate-200">
+            <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between gap-2">
               <h2 className="text-sm font-semibold text-slate-900">Assigned Leads</h2>
+              <PendingValue label="Access Pending Confirmation" />
             </div>
             {data.leads.length === 0 ? (
               <div className="p-4">
-                <EmptyState title="No Assigned Leads" description="No leads are currently assigned to your staff account." />
+                <EmptyState
+                  title="Assigned Lead Access Pending Confirmation"
+                  description="FR-06 does not automatically approve assigned lead access. Lead records and actions remain locked until the authorised staff permission matrix is confirmed."
+                />
               </div>
             ) : (
               <table className="w-full text-left border-collapse text-xs">
@@ -232,7 +206,6 @@ export function StaffWorkspace({
                     <th className="py-2.5 px-3 font-semibold">Territory & Source</th>
                     <th className="py-2.5 px-3 font-semibold">Product Interest</th>
                     <th className="py-2.5 px-3 font-semibold">Status</th>
-                    <th className="py-2.5 px-3 font-semibold text-right">Update</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200">
@@ -242,29 +215,6 @@ export function StaffWorkspace({
                       <td className="py-3 px-3 text-slate-600">{l.territory} · {l.source}</td>
                       <td className="py-3 px-3 text-slate-800">{l.productInterest}</td>
                       <td className="py-3 px-3"><StatusLabel text={l.status} /></td>
-                      <td className="py-3 px-3 text-right">
-                        <select
-                          aria-label={`Lead status for ${l.customerName}`}
-                          value={l.status}
-                          disabled={busy}
-                          onChange={(e) =>
-                            runAction(
-                              () =>
-                                apiRequest(token, `/api/leads/${l.id}`, {
-                                  method: 'PATCH',
-                                  body: JSON.stringify({ status: e.target.value }),
-                                }),
-                              `Updated assigned lead ${l.customerName} to ${e.target.value}.`
-                            )
-                          }
-                          className="rounded border border-slate-300 bg-white px-2 py-1 text-xs"
-                        >
-                          <option value="New">New</option>
-                          <option value="Contacted">Contacted</option>
-                          <option value="KYC Pending">KYC Pending</option>
-                          <option value="Converted">Converted</option>
-                        </select>
-                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -272,54 +222,32 @@ export function StaffWorkspace({
             )}
           </div>
 
-          <div className="space-y-3">
-            <h2 className="text-sm font-semibold text-slate-900">Assigned Customer Follow-Ups</h2>
+          <div className="rounded-lg border border-slate-200 bg-white overflow-hidden">
+            <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between gap-2">
+              <h2 className="text-sm font-semibold text-slate-900">Assigned Customer Follow-Ups</h2>
+              <PendingValue label="Access Pending Confirmation" />
+            </div>
             {data.customers.length === 0 ? (
-              <EmptyState title="No Assigned Customers" description="No customer records are currently assigned to this staff sub-user." />
+              <div className="p-4">
+                <EmptyState
+                  title="Customer Follow-Up Access Pending Confirmation"
+                  description="FR-06 does not automatically approve customer follow-up access. Follow-up actions and permission configuration are locked until the authorised FR-06 permission model is confirmed."
+                />
+              </div>
             ) : (
-              data.customers.map((c) => (
-                <div key={c.id} className="rounded-lg border border-slate-200 bg-white p-4 space-y-2.5 text-xs">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <span className="text-sm font-semibold text-slate-900">{c.name}</span>{' '}
-                      <span className="text-slate-500">· {c.city} · Stage: {c.pipelineStage}</span>
+              <div className="p-4 space-y-3">
+                {data.customers.map((c) => (
+                  <div key={c.id} className="rounded-lg border border-slate-200 bg-white p-4 space-y-2.5 text-xs">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <span className="text-sm font-semibold text-slate-900">{c.name}</span>{' '}
+                        <span className="text-slate-500">· {c.city} · Stage: {c.pipelineStage}</span>
+                      </div>
+                      <StatusLabel text={`KYC ${c.kycStatus}`} />
                     </div>
-                    <StatusLabel text={`KYC ${c.kycStatus}`} />
                   </div>
-                  <div className="text-slate-600">
-                    Next Follow-up: <span className="font-mono tabular-nums">{c.nextFollowUp}</span> · Preferences: Email ({c.commsPreferences.email ? 'Y' : 'N'}) / SMS ({c.commsPreferences.sms ? 'Y' : 'N'}) / WA ({c.commsPreferences.whatsapp ? 'Y' : 'N'})
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <input
-                      placeholder="Log assigned customer follow-up note..."
-                      value={followUpNote[c.id] || ''}
-                      onChange={(e) => setFollowUpNote({ ...followUpNote, [c.id]: e.target.value })}
-                      className="flex-1 min-w-[200px] rounded border border-slate-300 px-3 py-1.5 text-xs"
-                    />
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() =>
-                        runAction(
-                          async () => {
-                            await apiRequest(token, `/api/customers/${c.id}`, {
-                              method: 'PATCH',
-                              body: JSON.stringify({
-                                followUpNote: followUpNote[c.id] || 'Staff follow-up completed.',
-                              }),
-                            });
-                            setFollowUpNote({ ...followUpNote, [c.id]: '' });
-                          },
-                          `Logged follow-up note for ${c.name}.`
-                        )
-                      }
-                      className="rounded bg-blue-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-800 whitespace-nowrap"
-                    >
-                      Save Follow-Up
-                    </button>
-                  </div>
-                </div>
-              ))
+                ))}
+              </div>
             )}
           </div>
         </div>

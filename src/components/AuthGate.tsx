@@ -151,7 +151,9 @@ export function AuthGate({
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <span className="text-sm font-semibold text-slate-900">{acc.name}</span>
                           <span className="font-mono text-xs text-slate-500 tabular-nums">
-                            Timeout: {acc.sessionTimeoutMinutes}m
+                            {acc.configuredSessionTimeoutMinutes
+                              ? `Timeout: ${acc.configuredSessionTimeoutMinutes}m (Configurable)`
+                              : 'Timeout: Pending Confirmation'}
                           </span>
                         </div>
                         <div className="text-xs font-medium text-blue-800 mt-0.5">{acc.roleLabel}</div>
@@ -182,14 +184,19 @@ export function AuthGate({
               </div>
 
               <div className="rounded-md border border-slate-200 bg-slate-50 p-4 space-y-2">
-                <div className="flex items-center gap-2 text-xs font-medium text-slate-700">
-                  <KeyRound className="h-4 w-4 text-blue-700" aria-hidden="true" />
-                  <span>Authenticator 6-Digit Verification Code</span>
+                <div className="flex items-center justify-between gap-2 text-xs font-medium text-slate-700">
+                  <span className="inline-flex items-center gap-2">
+                    <KeyRound className="h-4 w-4 text-blue-700" aria-hidden="true" />
+                    <span>Built-in MFA Verification Challenge</span>
+                  </span>
+                  <span className="text-amber-700 font-medium">
+                    External Provider: {challenge.mfaIntegrationStatus}
+                  </span>
                 </div>
                 <p className="text-xs text-slate-500">
-                  Server-issued preview authenticator code:{' '}
+                  In-app 6-digit challenge code (no external MFA/authenticator integration connected):{' '}
                   <span className="font-mono font-semibold text-slate-900 tabular-nums">
-                    {challenge.authenticatorVerificationCode}
+                    {challenge.builtInChallengeCode}
                   </span>
                 </p>
               </div>
@@ -224,7 +231,7 @@ export function AuthGate({
                 </button>
                 <button
                   type="button"
-                  onClick={() => setOtpCode(challenge.authenticatorVerificationCode)}
+                  onClick={() => setOtpCode(challenge.builtInChallengeCode)}
                   className="rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
                 >
                   Fill Code

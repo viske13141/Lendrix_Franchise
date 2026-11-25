@@ -22,16 +22,22 @@ export interface UserAccount {
   franchiseeId?: string;
   franchiseeName?: string;
   mfaEnabled: boolean;
-  sessionTimeoutMinutes: number;
+  mfaMode: 'Built-in Challenge (External MFA Provider Not Connected)';
+  sessionTimeoutPolicy: 'Pending Confirmation';
+  configuredSessionTimeoutMinutes: number | null;
   lastAccessReview: string;
   status: 'Active' | 'Restricted';
+  makerCheckerRole?: {
+    canActAsMaker: boolean;
+    canActAsChecker: boolean;
+  };
   staffPermissions?: {
-    assignedLeadsView: boolean;
-    customerFollowUps: boolean;
-    commissionConfig: 'Not Permitted';
-    companyAdmin: 'Not Permitted';
-    lendrixAdmin: 'Not Permitted';
-    undefinedPermissionsStatus: 'Pending Confirmation';
+    permissionModelStatus: 'Pending Confirmation';
+    assignedLeadsAccess: 'Pending Confirmation';
+    customerFollowUpAccess: 'Pending Confirmation';
+    approvalRights: 'Not Permitted';
+    commissionAndAdminAccess: 'Not Permitted';
+    configurationLockedReason: string;
   };
 }
 
@@ -220,6 +226,7 @@ export interface LicenceRecord {
   franchiseeName: string;
   productCategory: ProductCategory;
   licenceType: string;
+  jurisdictionScope: string;
   registrationNumber: string;
   verificationStatus: LicenceVerificationStatus;
   expiryDate: string;
@@ -287,8 +294,21 @@ export interface TransactionRecord {
   productName: string;
   amount: number;
   workflowSummary: string;
-  manufacturerStatus: 'Submitted' | 'Under Review' | 'Approved / Issued' | 'Disbursed' | 'Booked' | 'Rejected';
-  eligibilityStatus: 'Pending' | 'Eligible' | 'Ineligible' | 'Reversed';
+  manufacturerStatus:
+    | 'Submitted'
+    | 'Under Review'
+    | 'Allotted / Executed'
+    | 'Disbursed'
+    | 'Policy Issued'
+    | 'Booked'
+    | 'Subscription Accepted'
+    | 'Rejected';
+  eligibilityStatus: 'Awaiting Verification' | 'Eligible' | 'Ineligible' | 'Reversed';
+  integrationSourceStatus:
+    | 'Awaiting Verification (Integration Not Connected)'
+    | 'Illustrative Baseline (FR-52 Integration Not Connected)';
+  eligibleStatusRule: string;
+  verifiedSourceReference?: string;
   commissionAccrued: number;
   postSaleServicing: {
     type: 'SIP Tracking' | 'Renewal Reminder' | 'Repayment Reminder' | 'Top-up Review' | 'Registration Follow-up' | 'Distribution Notice';
@@ -337,7 +357,9 @@ export interface CommissionStatement {
   reconciliationStatus: 'Matched' | 'Discrepancy' | 'Pending Reconciliation';
   discrepancyNote?: string;
   makerCheckerStage: 'Draft' | 'Maker Submitted' | 'Checker Approved' | 'Payout File Generated' | 'Paid';
+  makerActorId?: string;
   makerActor?: string;
+  checkerActorId?: string;
   checkerActor?: string;
   payoutDate: 'Pending Confirmation';
   invoiceNumber: string;
@@ -453,6 +475,12 @@ export interface DashboardPayload {
     totalInsurancePremiums: number;
     franchiseeChurnCount: number;
     commissionByProduct: Array<{ category: ProductCategory; amount: number }>;
+  };
+  securityConfig: {
+    sessionTimeoutPolicy: 'Pending Confirmation';
+    configurableTimeoutMinutes: number | null;
+    mfaIntegrationStatus: 'Not Connected';
+    mfaVerificationMode: string;
   };
   customerVisibilityNote: string;
 }

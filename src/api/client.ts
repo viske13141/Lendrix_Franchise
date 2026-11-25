@@ -8,7 +8,8 @@ export interface LoginAccountOption {
   roleLabel: string;
   franchiseeId?: string;
   franchiseeName?: string;
-  sessionTimeoutMinutes: number;
+  sessionTimeoutPolicy: 'Pending Confirmation';
+  configuredSessionTimeoutMinutes: number | null;
 }
 
 export interface MfaChallengeResponse {
@@ -19,7 +20,8 @@ export interface MfaChallengeResponse {
     role: PartyRole;
     roleLabel: string;
   };
-  authenticatorVerificationCode: string;
+  builtInChallengeCode: string;
+  mfaIntegrationStatus: 'Not Connected';
 }
 
 export interface AuthSessionResponse {
